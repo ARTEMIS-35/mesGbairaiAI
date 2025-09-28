@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mes Gbairai - Lutte contre la désinformation</title>
+<style>
+    body {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        background: linear-gradient(135deg, #d4fc79, #96e6a1);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 30px;
+        margin: 0;
+        min-height: 100vh;
+    }
+    h1, h2 {
+        color: #333;
+        text-align: center;
+    }
+    form {
+        background: #fff;
+        padding: 20px;
+        border-radius: 12px;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        margin-bottom: 20px;
+        width: 100%;
+        max-width: 450px;
+    }
+    input[type="text"] {
+        width: calc(100% - 20px);
+        padding: 10px;
+        margin-bottom: 12px;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        font-size: 16px;
+    }
+    button {
+        background-color: #4CAF50;
+        color: white;
+        border: none;
+        padding: 10px;
+        border-radius: 8px;
+        cursor: pointer;
+        width: 100%;
+        font-size: 16px;
+    }
+    button:hover {
+        background-color: #45a049;
+    }
+    #response-box, #teach-response {
+        background: #fff;
+        padding: 15px;
+        border-radius: 8px;
+        margin-top: 10px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        max-width: 450px;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+        text-align: left;
+    }
+    #response-source {
+        font-size: 0.9em;
+        color: #555;
+        margin-top: 5px;
+    }
+    #response {
+        max-height: 300px;
+        overflow-y: auto;
+    }
+</style>
+</head>
+<body>
+
+<h1>Mes Gbairai 🤖</h1>
+<h2>💬 Lutte contre la désinformation en Côte d'Ivoire</h2>
+
+<!-- Chat form -->
+<form id="chat-form">
+    <input type="hidden" id="username" value="Artemis" />
+    <input type="text" id="message" placeholder="Écris ton message ici..." required />
+    <button type="submit">Envoyer</button>
+</form>
+
+<div id="response-box">
+    <div id="response"></div>
+    <div id="response-source"></div>
+</div>
+
+<h2>📚 Enseigner une nouvelle réponse</h2>
+<form id="teach-form">
+    <input type="text" id="question" placeholder="Question..." required>
+    <input type="text" id="answer" placeholder="Réponse..." required>
+    <button type="submit">Enseigner</button>
+</form>
+<div id="teach-response"></div>
+
+<script>
+    const responseBox = document.getElementById('response-box');
+    const responseDiv = document.getElementById('response');
+    const responseSource = document.getElementById('response-source');
+
+    // Envoi du message à l'IA
+    document.getElementById('chat-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const messageText = document.getElementById('message').value;
+        const username = document.getElementById('username').value;
+
+        const res = await fetch('/chat', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ message: messageText, username })
+        });
+        const data = await res.json();
+
+        responseDiv.textContent = data.response;
+        responseSource.textContent = `Source: ${data.source === 'ai' ? 'IA' : data.source === 'web' ? 'Web' : 'Base de connaissances'}`;
+        document.getElementById('message').value = '';
+        responseBox.scrollIntoView({behavior: "smooth"});
+    });
+
+    // Enseigner une réponse
+    document.getElementById('teach-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const question = document.getElementById('question').value;
+        const answer = document.getElementById('answer').value;
+
+        const res = await fetch('/teach', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ question, answer })
+        });
+        const data = await res.json();
+        document.getElementById('teach-response').textContent = data.message;
+        document.getElementById('question').value = '';
+        document.getElementById('answer').value = '';
+    });
+</script>
+
+</body>
+</html>
