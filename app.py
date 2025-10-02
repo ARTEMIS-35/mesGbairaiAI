@@ -68,29 +68,42 @@ def save_knowledge():
 # FONCTIONS
 # ===============================
 def query_hf(prompt: str) -> str:
-    """Interroge le modèle Hugging Face DeepSeek"""
+    """Interroge le modèle Hugging Face choisi"""
     payload = {
         "inputs": prompt,
         "parameters": {
             "max_new_tokens": MAX_NEW_TOKENS,
-            "temperature": TEMPERATURE
+            "temperature": TEMPERATURE,
+            "top_p": 0.9,
+            "do_sample": True
         }
     }
     try:
-        response = requests.post(HF_MODEL_URL, headers=HEADERS_HF, json=payload, timeout=30)
+        response = requests.post(HF_MODEL_URL, headers=HEADERS_HF, json=payload, timeout=60)
         response.raise_for_status()
         data = response.json()
-        if isinstance(data, list) and "generated_text" in data[0]:
+        
+        # Selon le modèle Hugging Face, la réponse peut varier
+        if isinstance(data, dict) and "generated_text" in data:
+            return data["generated_text"]
+        elif isinstance(data, list) and "generated_text" in data[0]:
             return data[0]["generated_text"]
+        elif "error" in data:
+            logging.error(f"Erreur API Hugging Face : {data['error']}")
+            return "Erreur lors de la génération de texte."
         else:
-            logging.warning(f"Réponse inattendue du modèle: {data}")
+            logging.warning(f"Réponse inattendue Hugging Face : {data}")
             return "Désolé, je n'ai pas pu générer de réponse."
+    except requests.Timeout:
+        logging.error("⏳ Timeout Hugging Face")
+        return "Le serveur Hugging Face met trop de temps à répondre."
     except requests.RequestException as e:
-        logging.error(f"Erreur réseau Hugging Face: {e}")
-        return "Erreur de connexion au serveur Hugging Face."
+        logging.error(f"⚠️ Erreur réseau Hugging Face: {e}")
+        return "Erreur de connexion à Hugging Face."
     except Exception as e:
-        logging.error(f"Erreur inattendue Hugging Face: {e}")
+        logging.error(f"⚠️ Erreur inattendue Hugging Face: {e}")
         return "Une erreur est survenue lors du traitement."
+
 
 def search_serapi(query: str) -> str:
     """Recherche sur le web via SerpAPI"""
@@ -179,3 +192,4 @@ def teach():
 # ===============================
 if __name__ == "__main__":
     app.run(debug=True)
+
