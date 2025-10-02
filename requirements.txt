@@ -1,5 +1,4 @@
-transformers>=4.42.0
-accelerate
-torch
-bitsandbytes
 flask
+requests
+gunicorn
+huggingface-hub
