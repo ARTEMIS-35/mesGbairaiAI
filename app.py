@@ -1,8 +1,7 @@
 import os
+import re
 import json
 import logging
-import re
-import time
 import requests
 from flask import Flask, request, jsonify, render_template
 
@@ -19,12 +18,6 @@ MAX_NEW_TOKENS = config.get("max_new_tokens", 1000)
 TEMPERATURE = config.get("temperature", 0.7)
 HISTORY_FILE = config.get("history_file", "conversations.json")
 KNOWLEDGE_FILE = config.get("knowledge_file", "knowledge_base.json")
-
-# Paramètres pour la complétion du dernier mot
-COMPLETION_MAX_NEW_TOKENS = config.get("completion_max_new_tokens", 20)
-COMPLETION_TEMPERATURE = config.get("completion_temperature", 0.2)
-MIN_WORD_LENGTH_FOR_TRUNCATION = config.get("min_word_length_for_truncation", 2)
-MIN_TOTAL_LENGTH_FOR_TRUNCATION = config.get("min_total_length_for_truncation", 40)
 
 HF_API_KEY = os.getenv("HF_API_KEY")
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
@@ -73,105 +66,34 @@ def save_knowledge():
         logging.error(f"Erreur lors de la sauvegarde de la base de connaissances: {e}")
 
 # ===============================
-# UTIL: détection mot tronqué & complétion
+# HELPERS POUR TEXTE
 # ===============================
-def is_last_word_truncated(text: str, min_word_length: int = MIN_WORD_LENGTH_FOR_TRUNCATION, min_total_length: int = MIN_TOTAL_LENGTH_FOR_TRUNCATION) -> bool:
-    """
-    Heuristique pour détecter si le dernier mot semble tronqué.
-    - Retourne True si :
-      * le texte ne se termine pas par ponctuation (.!?…),
-      * le texte est suffisamment long (>= min_total_length),
-      * et le dernier token alphanumérique est très court (<= min_word_length),
-      ou si on remarque un mélange lettre+chiffre incomplet à la fin.
-    """
-    if not text or not isinstance(text, str):
-        return False
+def fix_cut_word(text: str) -> str:
+    """Supprime un dernier mot incomplet si coupé bizarrement"""
+    if not text:
+        return text
+    last_word = text.strip().split()[-1]
+    if len(last_word) <= 3 and not text.strip().endswith(('.', '!', '?')):
+        logging.info(f"⚠️ Mot coupé détecté : {last_word}")
+        return " ".join(text.strip().split()[:-1])
+    return text
 
+def is_sentence_incomplete(text: str) -> bool:
+    """Détecte si une phrase semble coupée au milieu"""
+    if not text:
+        return False
     t = text.strip()
-
-    # Si terminaison claire => pas tronqué
-    if t.endswith(('.', '!', '?', '…', ';', ':')):
-        return False
-
-    # Si texte court -> tolérer
-    if len(t) < min_total_length:
-        return False
-
-    # tokens alphanumériques
-    tokens = re.findall(r"\w+", t, flags=re.UNICODE)
-    if not tokens:
-        return False
-
-    last = tokens[-1]
-
-    # Si dernier token est très court -> suspect
-    if len(last) <= min_word_length:
-        logging.debug(f"Détection truncation: dernier token court '{last}' (len={len(last)})")
-        return True
-
-    # Si mélange lettre+chiffre à la fin -> suspect
-    if re.search(r"[A-Za-z]\d$|\d[A-Za-z]$", last):
-        logging.debug(f"Détection truncation: mélange suspect dans '{last}'")
-        return True
-
+    if not t.endswith(('.', '!', '?')):
+        # ex : "Ajouter le", "Mettre la", etc.
+        if re.search(r"\b(le|la|les|un|une|des|du|de l')$", t, re.IGNORECASE):
+            return True
     return False
 
-def complete_last_word(hf_model_url: str, headers: dict, original_prompt: str, partial_text: str, max_new_tokens: int = COMPLETION_MAX_NEW_TOKENS) -> str | None:
-    """
-    Demande au modèle de compléter uniquement le dernier mot du texte partiel.
-    Retourne la complétion (chaîne) ou None en cas d'échec.
-    """
-    # Construire un prompt court demandant uniquement la fin du dernier mot
-    completion_prompt = (
-        f"{original_prompt}\n\n"
-        f"Le texte suivant s'est arrêté en plein mot. Complète uniquement le dernier mot pour que la phrase soit lisible.\n\n"
-        f"Texte : \"{partial_text}\"\n\n"
-        "Réponds uniquement par la suite nécessaire pour compléter le dernier mot (ne répète pas tout le texte)."
-    )
-
-    payload = {
-        "inputs": completion_prompt,
-        "parameters": {
-            "max_new_tokens": max_new_tokens,
-            "temperature": COMPLETION_TEMPERATURE,
-            "top_p": 0.9,
-            "do_sample": False
-        }
-    }
-
-    try:
-        resp = requests.post(hf_model_url, headers=headers, json=payload, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-
-        # extraction robuste
-        if isinstance(data, list) and "generated_text" in data[0]:
-            cont = data[0]["generated_text"]
-        elif isinstance(data, dict) and "generated_text" in data:
-            cont = data.get("generated_text", "")
-        else:
-            logging.warning(f"Format inattendu de complétion last word: {data}")
-            return None
-
-        cont = cont.strip()
-
-        # Si le modèle renvoie le texte complet, essayer d'extraire seulement la portion en plus
-        # Cherche la première occurrence de partial_text dans cont
-        if cont.startswith(partial_text):
-            extra = cont[len(partial_text):].lstrip()
-            return extra if extra else None
-        else:
-            # Le modèle a renvoyé juste la suite — retourne tel quel
-            return cont
-    except Exception as e:
-        logging.warning(f"Échec complétion du dernier mot: {e}")
-        return None
-
 # ===============================
-# FONCTIONS D'APPEL HF / SERPAPI
+# FONCTIONS
 # ===============================
 def query_hf(prompt: str) -> str:
-    """Interroge le modèle Hugging Face choisi et retourne le texte brut généré."""
+    """Interroge le modèle Hugging Face choisi"""
     payload = {
         "inputs": prompt,
         "parameters": {
@@ -185,22 +107,29 @@ def query_hf(prompt: str) -> str:
         response = requests.post(HF_MODEL_URL, headers=HEADERS_HF, json=payload, timeout=60)
         response.raise_for_status()
         data = response.json()
-
-        # Selon le format renvoyé par le modèle
+        
+        # Selon le modèle Hugging Face, la réponse peut varier
         if isinstance(data, dict) and "generated_text" in data:
-            return data["generated_text"]
+            generated = data["generated_text"]
         elif isinstance(data, list) and "generated_text" in data[0]:
-            return data[0]["generated_text"]
-        elif isinstance(data, dict) and "error" in data:
+            generated = data[0]["generated_text"]
+        elif "error" in data:
             logging.error(f"Erreur API Hugging Face : {data['error']}")
             return "Erreur lors de la génération de texte."
         else:
             logging.warning(f"Réponse inattendue Hugging Face : {data}")
-            # Essayer de retourner une représentation textuelle si possible
-            try:
-                return str(data)
-            except Exception:
-                return "Désolé, je n'ai pas pu générer de réponse."
+            return "Désolé, je n'ai pas pu générer de réponse."
+        
+        # Correction des coupures
+        generated = fix_cut_word(generated)
+        if is_sentence_incomplete(generated):
+            logging.info("✍️ Phrase incomplète détectée — tentative de continuation...")
+            continuation_prompt = f"{prompt}\n\nLe texte s'est arrêté trop tôt. Continue directement la phrase ou l'étape en cours sans recommencer depuis le début."
+            extra = query_hf_simple(continuation_prompt)
+            if extra and not extra.startswith("Erreur"):
+                generated = (generated + " " + extra).strip()
+
+        return generated
     except requests.Timeout:
         logging.error("⏳ Timeout Hugging Face")
         return "Le serveur Hugging Face met trop de temps à répondre."
@@ -210,6 +139,23 @@ def query_hf(prompt: str) -> str:
     except Exception as e:
         logging.error(f"⚠️ Erreur inattendue Hugging Face: {e}")
         return "Une erreur est survenue lors du traitement."
+
+def query_hf_simple(prompt: str) -> str:
+    """Version simple sans correction (évite boucle infinie)"""
+    payload = {
+        "inputs": prompt,
+        "parameters": {"max_new_tokens": 200, "temperature": 0.7}
+    }
+    try:
+        response = requests.post(HF_MODEL_URL, headers=HEADERS_HF, json=payload, timeout=30)
+        data = response.json()
+        if isinstance(data, list) and "generated_text" in data[0]:
+            return data[0]["generated_text"]
+        elif isinstance(data, dict) and "generated_text" in data:
+            return data["generated_text"]
+        return ""
+    except:
+        return ""
 
 def search_serapi(query: str) -> str:
     """Recherche sur le web via SerpAPI"""
@@ -228,15 +174,8 @@ def search_serapi(query: str) -> str:
         )
         logging.info(f"✅ Résultat SerpAPI : {result}")
         return result
-    except requests.Timeout:
-        logging.error("⚠️ Timeout SerpAPI")
-        return "Erreur : le serveur de recherche met trop de temps à répondre."
-    except requests.RequestException as e:
-        logging.error(f"⚠️ Erreur réseau SerpAPI : {e}")
-        return "Erreur de connexion à SerpAPI."
-    except Exception as e:
-        logging.error(f"⚠️ Erreur inattendue SerpAPI : {e}")
-        return "Erreur inattendue lors de la recherche."
+    except:
+        return ""
 
 # ===============================
 # ROUTES FLASK
@@ -263,45 +202,16 @@ def chat():
     else:
         # 2️⃣ Rechercher sur le web
         web_answer = search_serapi(user_input)
-        if web_answer and web_answer.strip() != "":
-            # si SerpAPI retourne un texte trop court ou une erreur string, on laisse au modèle AI
-            # ici on considère web_answer valide si ce n'est pas un message d'erreur
-            if web_answer.startswith("Erreur"):
-                web_answer = ""  # ignorer ce résultat pour fallback IA
-            else:
-                answer = web_answer
-                source = "web"
-
-        # si web_answer n'a pas fourni de contenu utile, on génère via HF
-        if not ('answer' in locals() and answer):
+        if web_answer:
+            answer = web_answer
+            source = "web"
+        else:
+            # 3️⃣ Générer via DeepSeek
             history_text = "\n".join([f"{msg['name']} ({msg['role'].capitalize()}): {msg['content']}" 
                                       for msg in conversation_history])
-            prompt = f"Tu es un assistant en Côte d'Ivoire qui lutte contre la désinformation. Réponds de façon factuelle et claire.\n{history_text}\nAssistant:"
-            # génération initiale
-            generated = query_hf(prompt)
+            prompt = f"Tu es un assistant en Côte d'Ivoire qui lutte contre la désinformation.\n{history_text}\nAssistant:"
+            answer = query_hf(prompt)
             source = "ai"
-
-            # Si la réponse ressemble à un message d'erreur renvoyé par query_hf -> on l'utilise telle quelle
-            if generated.startswith("Erreur") or generated.startswith("Désolé"):
-                answer = generated
-            else:
-                # vérification du mot tronqué
-                if is_last_word_truncated(generated):
-                    logging.info("Mot tronqué détecté — tentative de complétion ciblée du dernier mot.")
-                    extra = complete_last_word(HF_MODEL_URL, HEADERS_HF, prompt, generated, max_new_tokens=COMPLETION_MAX_NEW_TOKENS)
-                    if extra:
-                        # Joindre proprement
-                        # si generated ne se termine pas par espace, assurer séparation correcte
-                        if not generated.endswith(" "):
-                            generated = generated + ""
-                        generated = (generated + extra).strip()
-                        # s'assurer de ponctuation finale
-                        if not generated.endswith(('.', '?', '!', '…', ';', ':')):
-                            generated = generated + "."
-                    else:
-                        logging.info("Aucune complétion trouvée pour le dernier mot.")
-                # finaliser la réponse
-                answer = generated
 
     conversation_history.append({"role": "assistant", "name": "Assistant", "content": answer})
     save_history()
